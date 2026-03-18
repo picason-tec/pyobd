@@ -598,7 +598,8 @@ class MyApp(wx.App):
                     self.active_recording_pids = list(selected_commands)
                     if self.active_recording_pids:
                         try:
-                            with open(app.CSVFILE, "w") as f:
+                            csv_path = getattr(app, 'CSVFILE', 'recording.csv')
+                            with open(csv_path, "w", encoding='utf-8') as f:
                                 header = "timestamp"
                                 for cmd in self.active_recording_pids:
                                     header += "," + cmd.desc
@@ -618,7 +619,8 @@ class MyApp(wx.App):
                                 val = str(r.value)
                         row += "," + val
                     try:
-                        with open(app.CSVFILE, "a") as f:
+                        csv_path = getattr(app, 'CSVFILE', 'recording.csv')
+                        with open(csv_path, "a", encoding='utf-8') as f:
                             f.write(row + "\n")
                     except Exception as e:
                         print(f"Error writing to CSV: {e}")
@@ -2333,6 +2335,9 @@ class MyApp(wx.App):
         self.graph_list_ctrl.InsertColumn(2, "Sensor", format=wx.LIST_FORMAT_LEFT, width=320)
         self.graph_list_ctrl.InsertColumn(3, "Value")
 
+        self.graph_list_ctrl.Bind(wx.EVT_LIST_ITEM_CHECKED, self.OnRecordChanged)
+        self.graph_list_ctrl.Bind(wx.EVT_LIST_ITEM_UNCHECKED, self.OnRecordChanged)
+
         self.graph_list_ctrl.InsertItem(0, "")
         self.nb.AddPage(self.graph_panel, "Graph")
         self.graph_list_ctrl.SetSize(0, 0, 800, 48)
@@ -2368,6 +2373,9 @@ class MyApp(wx.App):
         self.graphs_list_ctrl.InsertColumn(1, "PID", width=70)
         self.graphs_list_ctrl.InsertColumn(2, "Sensor", format=wx.LIST_FORMAT_LEFT, width=320)
         self.graphs_list_ctrl.InsertColumn(3, "Value")
+
+        self.graphs_list_ctrl.Bind(wx.EVT_LIST_ITEM_CHECKED, self.OnRecordChanged)
+        self.graphs_list_ctrl.Bind(wx.EVT_LIST_ITEM_UNCHECKED, self.OnRecordChanged)
 
         self.graphs_list_ctrl.InsertItem(0, "")
         self.graphs_list_ctrl.InsertItem(1, "")
@@ -2408,6 +2416,9 @@ class MyApp(wx.App):
         self.graphs8_list_ctrl.InsertColumn(1, "PID", width=70)
         self.graphs8_list_ctrl.InsertColumn(2, "Sensor", format=wx.LIST_FORMAT_LEFT, width=320)
         self.graphs8_list_ctrl.InsertColumn(3, "Value")
+
+        self.graphs8_list_ctrl.Bind(wx.EVT_LIST_ITEM_CHECKED, self.OnRecordChanged)
+        self.graphs8_list_ctrl.Bind(wx.EVT_LIST_ITEM_UNCHECKED, self.OnRecordChanged)
 
         self.graphs8_list_ctrl.InsertItem(0, "")
         self.graphs8_list_ctrl.InsertItem(1, "")
@@ -2538,6 +2549,7 @@ class MyApp(wx.App):
         self.COMPORT = 0
         self.senprod = None
         self.DEBUGLEVEL = 0  # debug everything
+        obd.logger.setLevel(obd.logging.ERROR)
 
         # tID = wx.NewId()
         tID = wx.NewIdRef(count=1)
@@ -2607,8 +2619,6 @@ class MyApp(wx.App):
         EVT_RESULT(self, self.SetSelectionGraphs8ComboBox, EVT_COMBOBOXGRAPHS8_SETSELECTION_ID)
         EVT_RESULT(self, self.GetRecordSelections, EVT_GET_RECORD_SELECTIONS_ID)
         self.recorded_pids_shared = []
-        self.Bind(wx.EVT_LIST_ITEM_CHECKED, self.OnRecordChanged)
-        self.Bind(wx.EVT_LIST_ITEM_UNCHECKED, self.OnRecordChanged)
         EVT_RESULT(self, self.InsertSensorRow, EVT_INSERT_SENSOR_ROW_ID)
         EVT_RESULT(self, self.InsertFreezeframeRow, EVT_INSERT_FREEZEFRAME_ROW_ID)
         EVT_RESULT(self, self.OnFreezeframeResult, EVT_FREEZEFRAME_RESULT_ID)
@@ -2956,6 +2966,8 @@ the Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  0211
 
     def update_recorded_pids(self):
         res = []
+        if not self.senprod or not hasattr(self.senprod, 'graph_commands'):
+            return
         try:
             # 1 Graph tab
             if self.graph_list_ctrl.IsItemChecked(0):
@@ -2964,18 +2976,19 @@ the Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  0211
             # 4 Graphs tab
             for i in range(4):
                 if self.graphs_list_ctrl.IsItemChecked(i):
-                    cb = getattr(self, f'combobox{i+1}')
-                    if cb.GetSelection() != -1:
+                    cb = getattr(self, f'combobox{i+1}', None)
+                    if cb and cb.GetSelection() != -1:
                         res.append(self.senprod.graph_commands[cb.GetSelection()])
             # 8 Graphs tab
             for i in range(8):
                 if self.graphs8_list_ctrl.IsItemChecked(i):
-                    cb = getattr(self, f'combobox8_{i+1}')
-                    if cb.GetSelection() != -1:
+                    cb = getattr(self, f'combobox8_{i+1}', None)
+                    if cb and cb.GetSelection() != -1:
                         res.append(self.senprod.graph_commands[cb.GetSelection()])
-        except:
-            pass
-        self.recorded_pids_shared = list(set(res)) # Unique PIDs
+        except Exception as e:
+            print(f"Error updating recorded PIDs: {e}")
+        # Unique PIDs, sorted to maintain stable order for comparison
+        self.recorded_pids_shared = sorted(list(set(res)), key=lambda x: x.command)
 
     def OnComboBoxGraph(self, event):
         self.graph_list_ctrl.CheckItem(0, False)

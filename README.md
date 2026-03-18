@@ -158,7 +158,7 @@ pip3 install -r requirements.txt
 pip3 install pyinstaller
 pip3 install --upgrade pip
 pip3 install --upgrade pyinstaller
-pyinstaller --onefile -c -i pyobd.ico --add-data "pyobd.ico;." pyobd.py
+pyinstaller --onefile -w -i pyobd.ico --add-data "pyobd.ico;." pyobd.py
 ```
 
 ### Linux-Executable

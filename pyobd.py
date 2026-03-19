@@ -593,18 +593,27 @@ class MyApp(wx.App):
                     return self.query_cache[cmd]
 
                 # Recording logic
-                selected_commands = getattr(app, 'recorded_pids_shared', [])
+                selected_commands = getattr(self._notify_window, 'recorded_pids_shared', [])
+                # Periodic log to confirm logic is running
+                if not hasattr(self, 'last_log_time'): self.last_log_time = 0
+                if time.time() - self.last_log_time > 10:
+                    wx.PostEvent(self._notify_window, DebugEvent([1, f"Recording loop active. Selected: {len(selected_commands)}"]))
+                    self.last_log_time = time.time()
+
                 if selected_commands != self.active_recording_pids:
                     self.active_recording_pids = list(selected_commands)
                     if self.active_recording_pids:
                         try:
-                            csv_path = getattr(app, 'CSVFILE', 'recording.csv')
+                            csv_path = getattr(self._notify_window, 'CSVFILE', 'recording.csv')
+                            wx.PostEvent(self._notify_window, DebugEvent([1, f"Initializing CSV file: {csv_path}"]))
                             with open(csv_path, "w", encoding='utf-8') as f:
                                 header = "timestamp"
                                 for cmd in self.active_recording_pids:
                                     header += "," + cmd.desc
                                 f.write(header + "\n")
+                            wx.PostEvent(self._notify_window, DebugEvent([1, "CSV file initialized successfully"]))
                         except Exception as e:
+                            wx.PostEvent(self._notify_window, DebugEvent([1, f"Error initializing CSV: {e}"]))
                             print(f"Error initializing CSV: {e}")
 
                 if self.active_recording_pids:
@@ -619,10 +628,11 @@ class MyApp(wx.App):
                                 val = str(r.value)
                         row += "," + val
                     try:
-                        csv_path = getattr(app, 'CSVFILE', 'recording.csv')
+                        csv_path = getattr(self._notify_window, 'CSVFILE', 'recording.csv')
                         with open(csv_path, "a", encoding='utf-8') as f:
                             f.write(row + "\n")
                     except Exception as e:
+                        wx.PostEvent(self._notify_window, DebugEvent([1, f"Error writing to CSV: {e}"]))
                         print(f"Error writing to CSV: {e}")
 
                 if not first_time:
@@ -2962,11 +2972,13 @@ the Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  0211
         self.get_record_selections_finished = True
 
     def OnRecordChanged(self, event):
+        wx.PostEvent(self, DebugEvent([1, "Record checkbox changed"]))
         self.update_recorded_pids()
 
     def update_recorded_pids(self):
         res = []
         if not self.senprod or not hasattr(self.senprod, 'graph_commands'):
+            wx.PostEvent(self, DebugEvent([1, "update_recorded_pids: senprod not ready"]))
             return
         try:
             # 1 Graph tab
@@ -2989,6 +3001,7 @@ the Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  0211
             print(f"Error updating recorded PIDs: {e}")
         # Unique PIDs, sorted to maintain stable order for comparison
         self.recorded_pids_shared = sorted(list(set(res)), key=lambda x: x.command)
+        wx.PostEvent(self, DebugEvent([1, f"Active recording PIDs count: {len(self.recorded_pids_shared)}"]))
 
     def OnComboBoxGraph(self, event):
         self.graph_list_ctrl.CheckItem(0, False)
@@ -3477,6 +3490,7 @@ the Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  0211
         self.senprod.start()
 
         self.sensor_control_on()
+        self.update_recorded_pids()
 
     def GetDTC(self, e):
         self.nb.SetSelection(3)

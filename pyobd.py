@@ -1143,7 +1143,7 @@ class MyApp(wx.App):
                         #sensor_descriptions.append("None")
                         for command in graph_commands:
                             sensor_descriptions.append(command.desc)
-                        app.recorded_pids_shared = []
+                        # app.recorded_pids_shared = []
                         app.build_combobox_graph_event_finished = False
                         wx.PostEvent(self._notify_window, BuildComboBoxGraphEvent(sensor_descriptions))
                         while not app.build_combobox_graph_event_finished:
@@ -1267,7 +1267,7 @@ class MyApp(wx.App):
                         #sensor_descriptions.append("None")
                         for command in graph_commands:
                             sensor_descriptions.append(command.desc)
-                        app.recorded_pids_shared = []
+                        # app.recorded_pids_shared = []
                         app.build_combobox_graphs_event_finished = False
                         wx.PostEvent(self._notify_window, BuildComboBoxGraphsEvent(sensor_descriptions))
                         while not app.build_combobox_graphs_event_finished:
@@ -1604,7 +1604,7 @@ class MyApp(wx.App):
                         # sensor_descriptions.append("None")
                         for command in graph_commands:
                             sensor_descriptions.append(command.desc)
-                        app.recorded_pids_shared = []
+                        # app.recorded_pids_shared = []
                         app.build_combobox_graphs8_event_finished = False
                         wx.PostEvent(self._notify_window, BuildComboBoxGraphs8Event(sensor_descriptions))
                         while not app.build_combobox_graphs8_event_finished:
@@ -2744,6 +2744,7 @@ class MyApp(wx.App):
         self.frame.Bind(wx.EVT_MENU, self.OnHelpAbout, id=ID_HELP_ABOUT)
         self.frame.Bind(wx.EVT_MENU, self.OnHelpVisit, id=ID_HELP_VISIT)
         self.frame.Bind(wx.EVT_MENU, self.OnHelpOrder, id=ID_HELP_ORDER)
+        self.nb.Bind(wx.EVT_NOTEBOOK_PAGE_CHANGED, self.OnPageChanged)
 
         self.SetTopWindow(self.frame)
 
@@ -2982,22 +2983,49 @@ the Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  0211
             return
         try:
             # 1 Graph tab
-            if self.graph_list_ctrl.IsItemChecked(0):
-                if hasattr(self, 'combobox') and self.combobox.GetSelection() != -1:
-                    res.append(self.senprod.graph_commands[self.combobox.GetSelection()])
+            try:
+                checked = self.graph_list_ctrl.IsItemChecked(0)
+                if checked:
+                    sel = self.combobox.GetSelection()
+                    if sel != -1:
+                        res.append(self.senprod.graph_commands[sel])
+                    else:
+                        wx.PostEvent(self, DebugEvent([1, "Tab 5: Row 0 checked but ComboBox has no selection"]))
+            except Exception as e:
+                wx.PostEvent(self, DebugEvent([1, f"Tab 5 error: {e}"]))
+
             # 4 Graphs tab
             for i in range(4):
-                if self.graphs_list_ctrl.IsItemChecked(i):
-                    cb = getattr(self, f'combobox{i+1}', None)
-                    if cb and cb.GetSelection() != -1:
-                        res.append(self.senprod.graph_commands[cb.GetSelection()])
+                try:
+                    checked = self.graphs_list_ctrl.IsItemChecked(i)
+                    if checked:
+                        cb = getattr(self, f'combobox{i+1}', None)
+                        if cb:
+                            sel = cb.GetSelection()
+                            if sel != -1:
+                                res.append(self.senprod.graph_commands[sel])
+                            else:
+                                wx.PostEvent(self, DebugEvent([1, f"Tab 6: Row {i} checked but ComboBox {i+1} has no selection"]))
+                except Exception as e:
+                    wx.PostEvent(self, DebugEvent([1, f"Tab 6 error at row {i}: {e}"]))
+
             # 8 Graphs tab
             for i in range(8):
-                if self.graphs8_list_ctrl.IsItemChecked(i):
-                    cb = getattr(self, f'combobox8_{i+1}', None)
-                    if cb and cb.GetSelection() != -1:
-                        res.append(self.senprod.graph_commands[cb.GetSelection()])
+                try:
+                    checked = self.graphs8_list_ctrl.IsItemChecked(i)
+                    if checked:
+                        cb = getattr(self, f'combobox8_{i+1}', None)
+                        if cb:
+                            sel = cb.GetSelection()
+                            if sel != -1:
+                                res.append(self.senprod.graph_commands[sel])
+                            else:
+                                wx.PostEvent(self, DebugEvent([1, f"Tab 7: Row {i} checked but ComboBox 8_{i+1} has no selection"]))
+                except Exception as e:
+                    wx.PostEvent(self, DebugEvent([1, f"Tab 7 error at row {i}: {e}"]))
+
         except Exception as e:
+            wx.PostEvent(self, DebugEvent([1, f"Major error in update_recorded_pids: {e}"]))
             print(f"Error updating recorded PIDs: {e}")
         # Unique PIDs, sorted to maintain stable order for comparison
         self.recorded_pids_shared = sorted(list(set(res)), key=lambda x: x.command)
@@ -3043,6 +3071,10 @@ the Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  0211
         self.update_recorded_pids()
     def OnComboBoxGraphs8_8(self, event):
         self.graphs8_list_ctrl.CheckItem(7, False)
+        self.update_recorded_pids()
+
+    def OnPageChanged(self, event):
+        wx.PostEvent(self, DebugEvent([1, f"Tab changed to: {self.nb.GetSelection()}"]))
         self.update_recorded_pids()
 
     def OnClose(self, event):

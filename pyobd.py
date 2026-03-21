@@ -489,6 +489,15 @@ class MyApp(wx.App):
             self.baudrate = self.connection.connection.interface.baudrate()
             self.portName = self.connection.connection.port_name()
 
+            # Global command discovery once after connection
+            self.graph_commands = []
+            for command in obd.commands[1]:
+                if command:
+                    if command.command not in (b"0100", b"0101", b"0120", b"0140", b"0103", b"0102", b"011C", b"0113", b"0141", b"0151"):
+                        if self.connection.connection.supported(command):
+                            self.graph_commands.append(command)
+            self.graph_commands.append(obd.commands.ELM_VOLTAGE)
+
             prevstate = -1
             curstate = -1
             first_time_sensors = True
@@ -1130,18 +1139,9 @@ class MyApp(wx.App):
                         prev_command = None
 
                         first_time_graph = False
-                        for command in obd.commands[1]:
-                            if command:
-                                if command.command not in (b"0100" , b"0101", b"0120", b"0140", b"0103", b"0102", b"011C", b"0113", b"0141", b"0151"):
-                                    r = self.connection.connection.query(command)
-                                    if r.value == None:
-                                        continue
-                                    else:
-                                        graph_commands.append(command)
-                        graph_commands.append(obd.commands.ELM_VOLTAGE)
                         sensor_descriptions = []
                         #sensor_descriptions.append("None")
-                        for command in graph_commands:
+                        for command in self.graph_commands:
                             sensor_descriptions.append(command.desc)
                         # app.recorded_pids_shared = []
                         app.build_combobox_graph_event_finished = False
@@ -1164,7 +1164,7 @@ class MyApp(wx.App):
                             curr_selection = -1
                         if curr_selection != -1:
                             prev_command = self.current_command
-                            self.current_command = graph_commands[curr_selection]
+                            self.current_command = self.graph_commands[curr_selection]
                         else:
                             self.current_command = None
 
@@ -1258,14 +1258,9 @@ class MyApp(wx.App):
                             if command:
                                 if command.command not in (b"0100" , b"0101", b"0120", b"0140", b"0103", b"0102", b"011C", b"0113", b"0141", b"0151"):
                                     r = self.connection.connection.query(command)
-                                    if r.value == None:
-                                        continue
-                                    else:
-                                        graph_commands.append(command)
-                        graph_commands.append(obd.commands.ELM_VOLTAGE)
                         sensor_descriptions = []
                         #sensor_descriptions.append("None")
-                        for command in graph_commands:
+                        for command in self.graph_commands:
                             sensor_descriptions.append(command.desc)
                         # app.recorded_pids_shared = []
                         app.build_combobox_graphs_event_finished = False
@@ -1290,7 +1285,7 @@ class MyApp(wx.App):
                             curr_selection1 = -1
                         if curr_selection1 != -1:
                             prev_command1 = self.current_command1
-                            self.current_command1 = graph_commands[curr_selection1]
+                            self.current_command1 = self.graph_commands[curr_selection1]
                         else:
                             self.current_command1 = None
 
@@ -1298,7 +1293,7 @@ class MyApp(wx.App):
                             curr_selection2 = -1
                         if curr_selection2 != -1:
                             prev_command2 = self.current_command2
-                            self.current_command2 = graph_commands[curr_selection2]
+                            self.current_command2 = self.graph_commands[curr_selection2]
                         else:
                             self.current_command2 = None
 
@@ -1306,7 +1301,7 @@ class MyApp(wx.App):
                             curr_selection3 = -1
                         if curr_selection3 != -1:
                             prev_command3 = self.current_command3
-                            self.current_command3 = graph_commands[curr_selection3]
+                            self.current_command3 = self.graph_commands[curr_selection3]
                         else:
                             self.current_command3 = None
 
@@ -1314,7 +1309,7 @@ class MyApp(wx.App):
                             curr_selection4 = -1
                         if curr_selection4 != -1:
                             prev_command4 = self.current_command4
-                            self.current_command4 = graph_commands[curr_selection4]
+                            self.current_command4 = self.graph_commands[curr_selection4]
                         else:
                             self.current_command4 = None
 
@@ -1589,20 +1584,9 @@ class MyApp(wx.App):
                         prev_command8_7 = None
                         prev_command8_8 = None
                         first_time_8graphs = False
-                        for command in obd.commands[1]:
-                            if command:
-                                if command.command not in (
-                                b"0100", b"0101", b"0120", b"0140", b"0103", b"0102", b"011C", b"0113", b"0141",
-                                b"0151"):
-                                    r = self.connection.connection.query(command)
-                                    if r.value == None:
-                                        continue
-                                    else:
-                                        graph_commands.append(command)
-                        graph_commands.append(obd.commands.ELM_VOLTAGE)
                         sensor_descriptions = []
                         # sensor_descriptions.append("None")
-                        for command in graph_commands:
+                        for command in self.graph_commands:
                             sensor_descriptions.append(command.desc)
                         # app.recorded_pids_shared = []
                         app.build_combobox_graphs8_event_finished = False
@@ -1631,7 +1615,7 @@ class MyApp(wx.App):
                             curr_selection8_1 = -1
                         if curr_selection8_1 != -1:
                             prev_command8_1 = self.current_command8_1
-                            self.current_command8_1 = graph_commands[curr_selection8_1]
+                            self.current_command8_1 = self.graph_commands[curr_selection8_1]
                         else:
                             self.current_command8_1 = None
 
@@ -1639,7 +1623,7 @@ class MyApp(wx.App):
                             curr_selection8_2 = -1
                         if curr_selection8_2 != -1:
                             prev_command8_2 = self.current_command8_2
-                            self.current_command8_2 = graph_commands[curr_selection8_2]
+                            self.current_command8_2 = self.graph_commands[curr_selection8_2]
                         else:
                             self.current_command8_2 = None
 
@@ -1647,7 +1631,7 @@ class MyApp(wx.App):
                             curr_selection8_3 = -1
                         if curr_selection8_3 != -1:
                             prev_command8_3 = self.current_command8_3
-                            self.current_command8_3 = graph_commands[curr_selection8_3]
+                            self.current_command8_3 = self.graph_commands[curr_selection8_3]
                         else:
                             self.current_command8_3 = None
 
@@ -1655,7 +1639,7 @@ class MyApp(wx.App):
                             curr_selection8_4 = -1
                         if curr_selection8_4 != -1:
                             prev_command8_4 = self.current_command8_4
-                            self.current_command8_4 = graph_commands[curr_selection8_4]
+                            self.current_command8_4 = self.graph_commands[curr_selection8_4]
                         else:
                             self.current_command8_4 = None
 
@@ -1663,7 +1647,7 @@ class MyApp(wx.App):
                             curr_selection8_5 = -1
                         if curr_selection8_5 != -1:
                             prev_command8_5 = self.current_command8_5
-                            self.current_command8_5 = graph_commands[curr_selection8_5]
+                            self.current_command8_5 = self.graph_commands[curr_selection8_5]
                         else:
                             self.current_command8_5 = None
 
@@ -1671,7 +1655,7 @@ class MyApp(wx.App):
                             curr_selection8_6 = -1
                         if curr_selection8_6 != -1:
                             prev_command8_6 = self.current_command8_6
-                            self.current_command8_6 = graph_commands[curr_selection8_6]
+                            self.current_command8_6 = self.graph_commands[curr_selection8_6]
                         else:
                             self.current_command8_6 = None
 
@@ -1679,7 +1663,7 @@ class MyApp(wx.App):
                             curr_selection8_7 = -1
                         if curr_selection8_7 != -1:
                             prev_command8_7 = self.current_command8_7
-                            self.current_command8_7 = graph_commands[curr_selection8_7]
+                            self.current_command8_7 = self.graph_commands[curr_selection8_7]
                         else:
                             self.current_command8_7 = None
 
@@ -1687,7 +1671,7 @@ class MyApp(wx.App):
                             curr_selection8_8 = -1
                         if curr_selection8_8 != -1:
                             prev_command8_8 = self.current_command8_8
-                            self.current_command8_8 = graph_commands[curr_selection8_8]
+                            self.current_command8_8 = self.graph_commands[curr_selection8_8]
                         else:
                             self.current_command8_8 = None
 
@@ -2746,6 +2730,10 @@ class MyApp(wx.App):
         self.frame.Bind(wx.EVT_MENU, self.OnHelpOrder, id=ID_HELP_ORDER)
         self.nb.Bind(wx.EVT_NOTEBOOK_PAGE_CHANGED, self.OnPageChanged)
 
+        self.recording_timer = wx.Timer(self)
+        self.Bind(wx.EVT_TIMER, lambda e: self.update_recorded_pids(), self.recording_timer)
+        self.recording_timer.Start(1000) # Sync every 1s
+
         self.SetTopWindow(self.frame)
 
         self.frame.Show(True)
@@ -2830,11 +2818,13 @@ the Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  0211
         self.freezeframe.InsertItem(counter, "")
 
     def BuildComboBoxGraph(self, event):
+        self.is_initializing_gui = True
         self.combobox = wx.ComboBox(self.graph_panel, choices=event.data, pos=(0, 65))
         self.combobox.Bind(wx.EVT_COMBOBOX, self.OnComboBoxGraph)
         self.build_combobox_graph_event_finished=True
 
     def BuildComboBoxGraphs(self, event):
+        self.is_initializing_gui = True
         self.combobox1 = wx.ComboBox(self.graphs_panel, choices=event.data, pos=(0, 140))
         self.combobox2 = wx.ComboBox(self.graphs_panel, choices=event.data, pos=(0, 190))
         self.combobox3 = wx.ComboBox(self.graphs_panel, choices=event.data, pos=(330, 140))
@@ -2846,6 +2836,7 @@ the Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  0211
         self.build_combobox_graphs_event_finished=True
 
     def BuildComboBoxGraphs8(self, event):
+        self.is_initializing_gui = True
         self.combobox8_1 = wx.ComboBox(self.graphs8_panel, choices=event.data, pos=(0, 240))
         self.combobox8_2 = wx.ComboBox(self.graphs8_panel, choices=event.data, pos=(0, 290))
         self.combobox8_3 = wx.ComboBox(self.graphs8_panel, choices=event.data, pos=(330, 240))
@@ -2935,6 +2926,7 @@ the Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  0211
 
     def SetSelectionGraphComboBox(self, event):
         self.combobox_selection = self.combobox.SetSelection(0)
+        self.is_initializing_gui = False
         self.combobox_graph_set_sel_finished = True
 
     def SetSelectionGraphsComboBox(self, event):
@@ -2942,6 +2934,7 @@ the Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  0211
         self.combobox2_selection = self.combobox2.SetSelection(1)
         self.combobox3_selection = self.combobox3.SetSelection(2)
         self.combobox4_selection = self.combobox4.SetSelection(3)
+        self.is_initializing_gui = False
         self.combobox_graphs_set_sel_finished = True
 
     def SetSelectionGraphs8ComboBox(self, event):
@@ -2953,6 +2946,7 @@ the Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  0211
         self.combobox8_6_selection = self.combobox8_6.SetSelection(6)
         self.combobox8_7_selection = self.combobox8_7.SetSelection(7)
         self.combobox8_8_selection = self.combobox8_8.SetSelection(8)
+        self.is_initializing_gui = False
         self.combobox_graphs8_set_sel_finished = True
 
     def GetRecordSelections(self, event):
@@ -2977,6 +2971,8 @@ the Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  0211
         self.update_recorded_pids()
 
     def update_recorded_pids(self):
+        if getattr(self, 'is_initializing_gui', False):
+            return
         res = []
         if not self.senprod or not hasattr(self.senprod, 'graph_commands'):
             wx.PostEvent(self, DebugEvent([1, "update_recorded_pids: senprod not ready"]))
@@ -2984,6 +2980,8 @@ the Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  0211
         try:
             # 1 Graph tab
             try:
+                item_count = self.graph_list_ctrl.GetItemCount()
+                wx.PostEvent(self, DebugEvent([1, f"Tab 5: item_count={item_count}"]))
                 checked = self.graph_list_ctrl.IsItemChecked(0)
                 if checked:
                     sel = self.combobox.GetSelection()
@@ -2997,6 +2995,8 @@ the Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  0211
             # 4 Graphs tab
             for i in range(4):
                 try:
+                    item_count = self.graphs_list_ctrl.GetItemCount()
+                    if i == 0: wx.PostEvent(self, DebugEvent([1, f"Tab 6: item_count={item_count}"]))
                     checked = self.graphs_list_ctrl.IsItemChecked(i)
                     if checked:
                         cb = getattr(self, f'combobox{i+1}', None)
@@ -3012,6 +3012,8 @@ the Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  0211
             # 8 Graphs tab
             for i in range(8):
                 try:
+                    item_count = self.graphs8_list_ctrl.GetItemCount()
+                    if i == 0: wx.PostEvent(self, DebugEvent([1, f"Tab 7: item_count={item_count}"]))
                     checked = self.graphs8_list_ctrl.IsItemChecked(i)
                     if checked:
                         cb = getattr(self, f'combobox8_{i+1}', None)

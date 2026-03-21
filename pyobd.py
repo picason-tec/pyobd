@@ -490,13 +490,15 @@ class MyApp(wx.App):
             self.portName = self.connection.connection.port_name()
 
             # Global command discovery once after connection
-            self.graph_commands = []
+            self.graph_commands = None
+            graph_commands = []
             for command in obd.commands[1]:
                 if command:
                     if command.command not in (b"0100", b"0101", b"0120", b"0140", b"0103", b"0102", b"011C", b"0113", b"0141", b"0151"):
                         if self.connection.connection.supported(command):
-                            self.graph_commands.append(command)
-            self.graph_commands.append(obd.commands.ELM_VOLTAGE)
+                            graph_commands.append(command)
+            graph_commands.append(obd.commands.ELM_VOLTAGE)
+            self.graph_commands = graph_commands
 
             prevstate = -1
             curstate = -1
@@ -606,7 +608,10 @@ class MyApp(wx.App):
                 # Periodic log to confirm logic is running
                 if not hasattr(self, 'last_log_time'): self.last_log_time = 0
                 if time.time() - self.last_log_time > 10:
-                    wx.PostEvent(self._notify_window, DebugEvent([1, f"Recording loop active. Selected: {len(selected_commands)}"]))
+                    csv_path = getattr(self._notify_window, 'CSVFILE', 'recording.csv')
+                    wx.PostEvent(self._notify_window, DebugEvent([1, f"Recording loop active. Selected: {len(selected_commands)}, CSV: {csv_path}"]))
+                    if len(selected_commands) == 0:
+                        wx.PostEvent(self._notify_window, DebugEvent([1, "Tip: Select metrics and check 'Record' in Graph tabs"]))
                     self.last_log_time = time.time()
 
                 if selected_commands != self.active_recording_pids:
@@ -2732,7 +2737,7 @@ class MyApp(wx.App):
 
         self.recording_timer = wx.Timer(self)
         self.Bind(wx.EVT_TIMER, lambda e: self.update_recorded_pids(), self.recording_timer)
-        self.recording_timer.Start(1000) # Sync every 1s
+        self.recording_timer.Start(500) # Sync every 500ms
 
         self.SetTopWindow(self.frame)
 
@@ -2974,64 +2979,77 @@ the Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  0211
         if getattr(self, 'is_initializing_gui', False):
             return
         res = []
-        if not self.senprod or not hasattr(self.senprod, 'graph_commands'):
-            wx.PostEvent(self, DebugEvent([1, "update_recorded_pids: senprod not ready"]))
+
+        # Check senprod readiness
+        if not self.senprod:
+            wx.PostEvent(self, DebugEvent([1, "update_recorded_pids: self.senprod is None"]))
             return
+        if not hasattr(self.senprod, 'graph_commands'):
+            wx.PostEvent(self, DebugEvent([1, "update_recorded_pids: self.senprod.graph_commands missing"]))
+            return
+
+        cmds = self.senprod.graph_commands
+        wx.PostEvent(self, DebugEvent([1, f"update_recorded_pids: discovered cmds count={len(cmds)}"]))
+
         try:
             # 1 Graph tab
             try:
                 item_count = self.graph_list_ctrl.GetItemCount()
-                wx.PostEvent(self, DebugEvent([1, f"Tab 5: item_count={item_count}"]))
-                checked = self.graph_list_ctrl.IsItemChecked(0)
-                if checked:
-                    sel = self.combobox.GetSelection()
-                    if sel != -1:
-                        res.append(self.senprod.graph_commands[sel])
-                    else:
-                        wx.PostEvent(self, DebugEvent([1, "Tab 5: Row 0 checked but ComboBox has no selection"]))
+                if item_count > 0:
+                    checked = self.graph_list_ctrl.IsItemChecked(0)
+                    wx.PostEvent(self, DebugEvent([1, f"Tab 5: item_count={item_count}, row 0 checked={checked}"]))
+                    if checked:
+                        sel = self.combobox.GetSelection()
+                        if sel != -1:
+                            res.append(cmds[sel])
+                        else:
+                            wx.PostEvent(self, DebugEvent([1, "Tab 5: Row 0 checked but ComboBox has no selection"]))
             except Exception as e:
                 wx.PostEvent(self, DebugEvent([1, f"Tab 5 error: {e}"]))
 
             # 4 Graphs tab
-            for i in range(4):
-                try:
-                    item_count = self.graphs_list_ctrl.GetItemCount()
-                    if i == 0: wx.PostEvent(self, DebugEvent([1, f"Tab 6: item_count={item_count}"]))
-                    checked = self.graphs_list_ctrl.IsItemChecked(i)
-                    if checked:
-                        cb = getattr(self, f'combobox{i+1}', None)
-                        if cb:
-                            sel = cb.GetSelection()
-                            if sel != -1:
-                                res.append(self.senprod.graph_commands[sel])
-                            else:
-                                wx.PostEvent(self, DebugEvent([1, f"Tab 6: Row {i} checked but ComboBox {i+1} has no selection"]))
-                except Exception as e:
-                    wx.PostEvent(self, DebugEvent([1, f"Tab 6 error at row {i}: {e}"]))
+            try:
+                item_count = self.graphs_list_ctrl.GetItemCount()
+                if item_count > 0:
+                    for i in range(min(item_count, 4)):
+                        checked = self.graphs_list_ctrl.IsItemChecked(i)
+                        wx.PostEvent(self, DebugEvent([1, f"Tab 6: row {i} checked={checked}"]))
+                        if checked:
+                            cb = getattr(self, f'combobox{i+1}', None)
+                            if cb:
+                                sel = cb.GetSelection()
+                                if sel != -1:
+                                    res.append(cmds[sel])
+                                else:
+                                    wx.PostEvent(self, DebugEvent([1, f"Tab 6: Row {i} checked but ComboBox {i+1} has no selection"]))
+            except Exception as e:
+                wx.PostEvent(self, DebugEvent([1, f"Tab 6 error: {e}"]))
 
             # 8 Graphs tab
-            for i in range(8):
-                try:
-                    item_count = self.graphs8_list_ctrl.GetItemCount()
-                    if i == 0: wx.PostEvent(self, DebugEvent([1, f"Tab 7: item_count={item_count}"]))
-                    checked = self.graphs8_list_ctrl.IsItemChecked(i)
-                    if checked:
-                        cb = getattr(self, f'combobox8_{i+1}', None)
-                        if cb:
-                            sel = cb.GetSelection()
-                            if sel != -1:
-                                res.append(self.senprod.graph_commands[sel])
-                            else:
-                                wx.PostEvent(self, DebugEvent([1, f"Tab 7: Row {i} checked but ComboBox 8_{i+1} has no selection"]))
-                except Exception as e:
-                    wx.PostEvent(self, DebugEvent([1, f"Tab 7 error at row {i}: {e}"]))
+            try:
+                item_count = self.graphs8_list_ctrl.GetItemCount()
+                if item_count > 0:
+                    for i in range(min(item_count, 8)):
+                        checked = self.graphs8_list_ctrl.IsItemChecked(i)
+                        wx.PostEvent(self, DebugEvent([1, f"Tab 7: row {i} checked={checked}"]))
+                        if checked:
+                            cb = getattr(self, f'combobox8_{i+1}', None)
+                            if cb:
+                                sel = cb.GetSelection()
+                                if sel != -1:
+                                    res.append(cmds[sel])
+                                else:
+                                    wx.PostEvent(self, DebugEvent([1, f"Tab 7: Row {i} checked but ComboBox 8_{i+1} has no selection"]))
+            except Exception as e:
+                wx.PostEvent(self, DebugEvent([1, f"Tab 7 error: {e}"]))
 
         except Exception as e:
             wx.PostEvent(self, DebugEvent([1, f"Major error in update_recorded_pids: {e}"]))
             print(f"Error updating recorded PIDs: {e}")
+
         # Unique PIDs, sorted to maintain stable order for comparison
-        self.recorded_pids_shared = sorted(list(set(res)), key=lambda x: x.command)
-        wx.PostEvent(self, DebugEvent([1, f"Active recording PIDs count: {len(self.recorded_pids_shared)}"]))
+        self.recorded_pids_shared = sorted(list(set(res)), key=lambda x: str(x.command))
+        wx.PostEvent(self, DebugEvent([1, f"FINAL Active recording PIDs count: {len(self.recorded_pids_shared)}"]))
 
     def OnComboBoxGraph(self, event):
         self.graph_list_ctrl.CheckItem(0, False)

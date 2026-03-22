@@ -436,6 +436,7 @@ class MyApp(wx.App):
             self.baudrate = BAUDRATE
             self.FAST = FAST
             self._nb = _nb
+            self.graph_commands = []
             threading.Thread.__init__(self)
             self.state = "started"
 
@@ -480,7 +481,18 @@ class MyApp(wx.App):
 
 
         def run(self):
+            try:
+                self._run()
+            except Exception as e:
+                import traceback
+                tb = traceback.format_exc()
+                wx.PostEvent(self._notify_window, DebugEvent([1, f"CRITICAL: sensorProducer crashed: {e}"]))
+                print(f"CRITICAL: sensorProducer crashed: {e}\n{tb}")
+                self.state = "finished"
+                self.stop()
 
+        def _run(self):
+            wx.PostEvent(self._notify_window, DebugEvent([1, "sensorProducer thread started"]))
             if self.initCommunication() != "OK":
                 self._notify_window.ThreadControl = 666
                 self.state = "finished"
@@ -499,6 +511,7 @@ class MyApp(wx.App):
                             graph_commands.append(command)
             graph_commands.append(obd.commands.ELM_VOLTAGE)
             self.graph_commands = graph_commands
+            wx.PostEvent(self._notify_window, DebugEvent([1, f"Command discovery complete. Found {len(self.graph_commands)} supported sensors."]))
 
             prevstate = -1
             curstate = -1
@@ -2618,6 +2631,7 @@ class MyApp(wx.App):
         EVT_RESULT(self, self.SetSelectionGraphs8ComboBox, EVT_COMBOBOXGRAPHS8_SETSELECTION_ID)
         EVT_RESULT(self, self.GetRecordSelections, EVT_GET_RECORD_SELECTIONS_ID)
         self.recorded_pids_shared = []
+        self.is_initializing_gui = False
         EVT_RESULT(self, self.InsertSensorRow, EVT_INSERT_SENSOR_ROW_ID)
         EVT_RESULT(self, self.InsertFreezeframeRow, EVT_INSERT_FREEZEFRAME_ROW_ID)
         EVT_RESULT(self, self.OnFreezeframeResult, EVT_FREEZEFRAME_RESULT_ID)
@@ -2980,12 +2994,18 @@ the Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  0211
             return
         res = []
 
+        if not hasattr(self, 'last_ready_log_time'): self.last_ready_log_time = 0
+
         # Check senprod readiness
         if not self.senprod:
-            wx.PostEvent(self, DebugEvent([1, "update_recorded_pids: self.senprod is None"]))
+            if time.time() - self.last_ready_log_time > 5:
+                wx.PostEvent(self, DebugEvent([1, "update_recorded_pids: self.senprod is None"]))
+                self.last_ready_log_time = time.time()
             return
-        if not hasattr(self.senprod, 'graph_commands'):
-            wx.PostEvent(self, DebugEvent([1, "update_recorded_pids: self.senprod.graph_commands missing"]))
+        if not self.senprod.graph_commands:
+            if time.time() - self.last_ready_log_time > 5:
+                wx.PostEvent(self, DebugEvent([1, "update_recorded_pids: self.senprod.graph_commands empty"]))
+                self.last_ready_log_time = time.time()
             return
 
         cmds = self.senprod.graph_commands
@@ -3533,6 +3553,7 @@ the Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  0211
 
     def OpenPort(self, e):
         print("Open port event.")
+        self.is_initializing_gui = False
         if self.senprod:
             if self.senprod.is_alive():  # signal current producers to finish
                 self.senprod.stop()

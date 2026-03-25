@@ -507,8 +507,11 @@ class MyApp(wx.App):
             for command in obd.commands[1]:
                 if command:
                     if command.command not in (b"0100", b"0101", b"0120", b"0140", b"0103", b"0102", b"011C", b"0113", b"0141", b"0151"):
-                        if self.connection.connection.supported(command):
-                            graph_commands.append(command)
+                        try:
+                            if self.connection.connection.supported_commands and command in self.connection.connection.supported_commands:
+                                graph_commands.append(command)
+                        except Exception as e:
+                            print(f"Error checking support for {command.desc}: {e}")
             graph_commands.append(obd.commands.ELM_VOLTAGE)
             self.graph_commands = graph_commands
             wx.PostEvent(self._notify_window, DebugEvent([1, f"Command discovery complete. Found {len(self.graph_commands)} supported sensors."]))

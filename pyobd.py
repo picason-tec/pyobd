@@ -119,6 +119,8 @@ EVT_FREEZEFRAME_RESULT_ID = 1043
 EVT_COMBOBOXGRAPHS8_GETSELECTION_ID =1105
 EVT_COMBOBOXGRAPHS8_SETSELECTION_ID =1106
 
+EVT_GET_RECORD_SELECTIONS_ID = 1110
+
 lock = threading.Lock()
 
 def resource_path(relative_path):
@@ -295,6 +297,15 @@ class SetSelectionComboBoxGraphs8Event(wx.PyEvent):
         self.SetEventType(EVT_COMBOBOXGRAPHS8_SETSELECTION_ID)
         self.data = data
 
+class GetRecordSelectionsEvent(wx.PyEvent):
+    """Simple event to carry arbitrary result data."""
+
+    def __init__(self, data):
+        """Init Result Event."""
+        wx.PyEvent.__init__(self)
+        self.SetEventType(EVT_GET_RECORD_SELECTIONS_ID)
+        self.data = data
+
 
 
 class GraphValueEvent(wx.PyEvent):
@@ -425,6 +436,7 @@ class MyApp(wx.App):
             self.baudrate = BAUDRATE
             self.FAST = FAST
             self._nb = _nb
+            self.graph_commands = []
             threading.Thread.__init__(self)
             self.state = "started"
 
@@ -469,7 +481,18 @@ class MyApp(wx.App):
 
 
         def run(self):
+            try:
+                self._run()
+            except Exception as e:
+                import traceback
+                tb = traceback.format_exc()
+                wx.PostEvent(self._notify_window, DebugEvent([1, f"CRITICAL: sensorProducer crashed: {e}"]))
+                print(f"CRITICAL: sensorProducer crashed: {e}\n{tb}")
+                self.state = "finished"
+                self.stop()
 
+        def _run(self):
+            wx.PostEvent(self._notify_window, DebugEvent([1, "sensorProducer thread started"]))
             if self.initCommunication() != "OK":
                 self._notify_window.ThreadControl = 666
                 self.state = "finished"
@@ -477,6 +500,21 @@ class MyApp(wx.App):
 
             self.baudrate = self.connection.connection.interface.baudrate()
             self.portName = self.connection.connection.port_name()
+
+            # Global command discovery once after connection
+            self.graph_commands = None
+            graph_commands = []
+            for command in obd.commands[1]:
+                if command:
+                    if command.command not in (b"0100", b"0101", b"0120", b"0140", b"0103", b"0102", b"011C", b"0113", b"0141", b"0151"):
+                        try:
+                            if self.connection.connection.supported_commands and command in self.connection.connection.supported_commands:
+                                graph_commands.append(command)
+                        except Exception as e:
+                            print(f"Error checking support for {command.desc}: {e}")
+            graph_commands.append(obd.commands.ELM_VOLTAGE)
+            self.graph_commands = graph_commands
+            wx.PostEvent(self._notify_window, DebugEvent([1, f"Command discovery complete. Found {len(self.graph_commands)} supported sensors."]))
 
             prevstate = -1
             curstate = -1
@@ -505,6 +543,9 @@ class MyApp(wx.App):
             self.graph_dirty8_6 = False
             self.graph_dirty8_7 = False
             self.graph_dirty8_8 = False
+
+            self.active_recording_pids = []
+
             #sensor_list = []
             misfire_cylinder_supported = True
             first_time=True
@@ -563,15 +604,66 @@ class MyApp(wx.App):
                     self._notify_window.ThreadControl = 666
 
             while self._notify_window.ThreadControl != 666:
-                print (self._notify_window.ThreadControl)
+                #print (self._notify_window.ThreadControl)
                 if self.connection.connection.status() != OBDStatus.CAR_CONNECTED:
                     reconnect()
                     continue
                 prevstate = curstate
                 curstate = self._nb.GetSelection()  # picking the tab in the GUI
 
+                # Reset cache for this iteration
+                self.query_cache = {}
 
+                def cached_query(cmd):
+                    if cmd not in self.query_cache:
+                        self.query_cache[cmd] = self.connection.connection.query(cmd)
+                    return self.query_cache[cmd]
 
+                # Recording logic
+                selected_commands = getattr(self._notify_window, 'recorded_pids_shared', [])
+                # Periodic log to confirm logic is running
+                if not hasattr(self, 'last_log_time'): self.last_log_time = 0
+                if time.time() - self.last_log_time > 10:
+                    csv_path = getattr(self._notify_window, 'CSVFILE', 'recording.csv')
+                    wx.PostEvent(self._notify_window, DebugEvent([1, f"Recording loop active. Selected: {len(selected_commands)}, CSV: {csv_path}"]))
+                    if len(selected_commands) == 0:
+                        wx.PostEvent(self._notify_window, DebugEvent([1, "Tip: Select metrics and check 'Record' in Graph tabs"]))
+                    self.last_log_time = time.time()
+
+                if selected_commands != self.active_recording_pids:
+                    self.active_recording_pids = list(selected_commands)
+                    if self.active_recording_pids:
+                        try:
+                            csv_path = getattr(self._notify_window, 'CSVFILE', 'recording.csv')
+                            wx.PostEvent(self._notify_window, DebugEvent([1, f"Initializing CSV file: {csv_path}"]))
+                            with open(csv_path, "w", encoding='utf-8') as f:
+                                header = "timestamp"
+                                for cmd in self.active_recording_pids:
+                                    header += "," + cmd.desc
+                                f.write(header + "\n")
+                            wx.PostEvent(self._notify_window, DebugEvent([1, "CSV file initialized successfully"]))
+                        except Exception as e:
+                            wx.PostEvent(self._notify_window, DebugEvent([1, f"Error initializing CSV: {e}"]))
+                            print(f"Error initializing CSV: {e}")
+
+                if self.active_recording_pids:
+                    row = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    for cmd in self.active_recording_pids:
+                        r = cached_query(cmd)
+                        val = ""
+                        if r.value != None:
+                            try:
+                                val = str(r.value.magnitude)
+                            except AttributeError:
+                                val = str(r.value)
+                        row += "," + val
+                    try:
+                        csv_path = getattr(self._notify_window, 'CSVFILE', 'recording.csv')
+                        with open(csv_path, "a", encoding='utf-8') as f:
+                            f.write(row + "\n")
+                    except Exception as e:
+                        wx.PostEvent(self._notify_window, DebugEvent([1, f"Error writing to CSV: {e}"]))
+                        print(f"Error writing to CSV: {e}")
 
                 if not first_time:
                     diff = (time_end - time_start).total_seconds()
@@ -1068,19 +1160,11 @@ class MyApp(wx.App):
                         prev_command = None
 
                         first_time_graph = False
-                        for command in obd.commands[1]:
-                            if command:
-                                if command.command not in (b"0100" , b"0101", b"0120", b"0140", b"0103", b"0102", b"011C", b"0113", b"0141", b"0151"):
-                                    r = self.connection.connection.query(command)
-                                    if r.value == None:
-                                        continue
-                                    else:
-                                        graph_commands.append(command)
-                        graph_commands.append(obd.commands.ELM_VOLTAGE)
                         sensor_descriptions = []
                         #sensor_descriptions.append("None")
-                        for command in graph_commands:
+                        for command in self.graph_commands:
                             sensor_descriptions.append(command.desc)
+                        # app.recorded_pids_shared = []
                         app.build_combobox_graph_event_finished = False
                         wx.PostEvent(self._notify_window, BuildComboBoxGraphEvent(sensor_descriptions))
                         while not app.build_combobox_graph_event_finished:
@@ -1101,7 +1185,7 @@ class MyApp(wx.App):
                             curr_selection = -1
                         if curr_selection != -1:
                             prev_command = self.current_command
-                            self.current_command = graph_commands[curr_selection]
+                            self.current_command = self.graph_commands[curr_selection]
                         else:
                             self.current_command = None
 
@@ -1110,11 +1194,11 @@ class MyApp(wx.App):
                                 self.graph_x_vals = np.array([])
                                 self.graph_y_vals = np.array([])
                                 self.graph_counter = 0
-                                wx.PostEvent(self._notify_window, GraphValueEvent([0, 0, self.current_command.command]))
+                                wx.PostEvent(self._notify_window, GraphValueEvent([0, 0, self.current_command.command.decode() if isinstance(self.current_command.command, bytes) else self.current_command.command]))
                                 wx.PostEvent(self._notify_window, GraphValueEvent([0, 1, self.current_command.desc]))
                             else:
 
-                                r = self.connection.connection.query(self.current_command)
+                                r = cached_query(self.current_command)
                                 if r.value == None:
                                     reconnect()
                                     continue
@@ -1195,15 +1279,11 @@ class MyApp(wx.App):
                             if command:
                                 if command.command not in (b"0100" , b"0101", b"0120", b"0140", b"0103", b"0102", b"011C", b"0113", b"0141", b"0151"):
                                     r = self.connection.connection.query(command)
-                                    if r.value == None:
-                                        continue
-                                    else:
-                                        graph_commands.append(command)
-                        graph_commands.append(obd.commands.ELM_VOLTAGE)
                         sensor_descriptions = []
                         #sensor_descriptions.append("None")
-                        for command in graph_commands:
+                        for command in self.graph_commands:
                             sensor_descriptions.append(command.desc)
+                        # app.recorded_pids_shared = []
                         app.build_combobox_graphs_event_finished = False
                         wx.PostEvent(self._notify_window, BuildComboBoxGraphsEvent(sensor_descriptions))
                         while not app.build_combobox_graphs_event_finished:
@@ -1226,7 +1306,7 @@ class MyApp(wx.App):
                             curr_selection1 = -1
                         if curr_selection1 != -1:
                             prev_command1 = self.current_command1
-                            self.current_command1 = graph_commands[curr_selection1]
+                            self.current_command1 = self.graph_commands[curr_selection1]
                         else:
                             self.current_command1 = None
 
@@ -1234,7 +1314,7 @@ class MyApp(wx.App):
                             curr_selection2 = -1
                         if curr_selection2 != -1:
                             prev_command2 = self.current_command2
-                            self.current_command2 = graph_commands[curr_selection2]
+                            self.current_command2 = self.graph_commands[curr_selection2]
                         else:
                             self.current_command2 = None
 
@@ -1242,7 +1322,7 @@ class MyApp(wx.App):
                             curr_selection3 = -1
                         if curr_selection3 != -1:
                             prev_command3 = self.current_command3
-                            self.current_command3 = graph_commands[curr_selection3]
+                            self.current_command3 = self.graph_commands[curr_selection3]
                         else:
                             self.current_command3 = None
 
@@ -1250,7 +1330,7 @@ class MyApp(wx.App):
                             curr_selection4 = -1
                         if curr_selection4 != -1:
                             prev_command4 = self.current_command4
-                            self.current_command4 = graph_commands[curr_selection4]
+                            self.current_command4 = self.graph_commands[curr_selection4]
                         else:
                             self.current_command4 = None
 
@@ -1261,10 +1341,10 @@ class MyApp(wx.App):
                                 #self.graph_x_vals1 = []
                                 #self.graph_y_vals1 = []
                                 self.graph_counter1 = 0
-                                wx.PostEvent(self._notify_window, GraphsValueEvent([0, 0, self.current_command1.command]))
+                                wx.PostEvent(self._notify_window, GraphsValueEvent([0, 0, self.current_command1.command.decode() if isinstance(self.current_command1.command, bytes) else self.current_command1.command]))
                                 wx.PostEvent(self._notify_window, GraphsValueEvent([0, 1, self.current_command1.desc]))
                             else:
-                                r = self.connection.connection.query(self.current_command1)
+                                r = cached_query(self.current_command1)
                                 if r.value == None:
                                     reconnect()
                                     continue
@@ -1309,10 +1389,10 @@ class MyApp(wx.App):
                                 #self.graph_x_vals2 = []
                                 #self.graph_y_vals2 = []
                                 self.graph_counter2 = 0
-                                wx.PostEvent(self._notify_window, GraphsValueEvent([1, 0, self.current_command2.command]))
+                                wx.PostEvent(self._notify_window, GraphsValueEvent([1, 0, self.current_command2.command.decode() if isinstance(self.current_command2.command, bytes) else self.current_command2.command]))
                                 wx.PostEvent(self._notify_window, GraphsValueEvent([1, 1, self.current_command2.desc]))
                             else:
-                                r = self.connection.connection.query(self.current_command2)
+                                r = cached_query(self.current_command2)
                                 if r.value == None:
                                     reconnect()
                                     continue
@@ -1357,10 +1437,10 @@ class MyApp(wx.App):
                                 #self.graph_x_vals3 = []
                                 #self.graph_y_vals3 = []
                                 self.graph_counter3 = 0
-                                wx.PostEvent(self._notify_window, GraphsValueEvent([2, 0, self.current_command3.command]))
+                                wx.PostEvent(self._notify_window, GraphsValueEvent([2, 0, self.current_command3.command.decode() if isinstance(self.current_command3.command, bytes) else self.current_command3.command]))
                                 wx.PostEvent(self._notify_window, GraphsValueEvent([2, 1, self.current_command3.desc]))
                             else:
-                                r = self.connection.connection.query(self.current_command3)
+                                r = cached_query(self.current_command3)
                                 if r.value == None:
                                     reconnect()
                                     continue
@@ -1405,10 +1485,10 @@ class MyApp(wx.App):
                                 #self.graph_x_vals4 = []
                                 #self.graph_y_vals4 = []
                                 self.graph_counter4 = 0
-                                wx.PostEvent(self._notify_window, GraphsValueEvent([3, 0, self.current_command4.command]))
+                                wx.PostEvent(self._notify_window, GraphsValueEvent([3, 0, self.current_command4.command.decode() if isinstance(self.current_command4.command, bytes) else self.current_command4.command]))
                                 wx.PostEvent(self._notify_window, GraphsValueEvent([3, 1, self.current_command4.desc]))
                             else:
-                                r = self.connection.connection.query(self.current_command4)
+                                r = cached_query(self.current_command4)
                                 if r.value == None:
                                     reconnect()
                                     continue
@@ -1525,21 +1605,11 @@ class MyApp(wx.App):
                         prev_command8_7 = None
                         prev_command8_8 = None
                         first_time_8graphs = False
-                        for command in obd.commands[1]:
-                            if command:
-                                if command.command not in (
-                                b"0100", b"0101", b"0120", b"0140", b"0103", b"0102", b"011C", b"0113", b"0141",
-                                b"0151"):
-                                    r = self.connection.connection.query(command)
-                                    if r.value == None:
-                                        continue
-                                    else:
-                                        graph_commands.append(command)
-                        graph_commands.append(obd.commands.ELM_VOLTAGE)
                         sensor_descriptions = []
                         # sensor_descriptions.append("None")
-                        for command in graph_commands:
+                        for command in self.graph_commands:
                             sensor_descriptions.append(command.desc)
+                        # app.recorded_pids_shared = []
                         app.build_combobox_graphs8_event_finished = False
                         wx.PostEvent(self._notify_window, BuildComboBoxGraphs8Event(sensor_descriptions))
                         while not app.build_combobox_graphs8_event_finished:
@@ -1566,7 +1636,7 @@ class MyApp(wx.App):
                             curr_selection8_1 = -1
                         if curr_selection8_1 != -1:
                             prev_command8_1 = self.current_command8_1
-                            self.current_command8_1 = graph_commands[curr_selection8_1]
+                            self.current_command8_1 = self.graph_commands[curr_selection8_1]
                         else:
                             self.current_command8_1 = None
 
@@ -1574,7 +1644,7 @@ class MyApp(wx.App):
                             curr_selection8_2 = -1
                         if curr_selection8_2 != -1:
                             prev_command8_2 = self.current_command8_2
-                            self.current_command8_2 = graph_commands[curr_selection8_2]
+                            self.current_command8_2 = self.graph_commands[curr_selection8_2]
                         else:
                             self.current_command8_2 = None
 
@@ -1582,7 +1652,7 @@ class MyApp(wx.App):
                             curr_selection8_3 = -1
                         if curr_selection8_3 != -1:
                             prev_command8_3 = self.current_command8_3
-                            self.current_command8_3 = graph_commands[curr_selection8_3]
+                            self.current_command8_3 = self.graph_commands[curr_selection8_3]
                         else:
                             self.current_command8_3 = None
 
@@ -1590,7 +1660,7 @@ class MyApp(wx.App):
                             curr_selection8_4 = -1
                         if curr_selection8_4 != -1:
                             prev_command8_4 = self.current_command8_4
-                            self.current_command8_4 = graph_commands[curr_selection8_4]
+                            self.current_command8_4 = self.graph_commands[curr_selection8_4]
                         else:
                             self.current_command8_4 = None
 
@@ -1598,7 +1668,7 @@ class MyApp(wx.App):
                             curr_selection8_5 = -1
                         if curr_selection8_5 != -1:
                             prev_command8_5 = self.current_command8_5
-                            self.current_command8_5 = graph_commands[curr_selection8_5]
+                            self.current_command8_5 = self.graph_commands[curr_selection8_5]
                         else:
                             self.current_command8_5 = None
 
@@ -1606,7 +1676,7 @@ class MyApp(wx.App):
                             curr_selection8_6 = -1
                         if curr_selection8_6 != -1:
                             prev_command8_6 = self.current_command8_6
-                            self.current_command8_6 = graph_commands[curr_selection8_6]
+                            self.current_command8_6 = self.graph_commands[curr_selection8_6]
                         else:
                             self.current_command8_6 = None
 
@@ -1614,7 +1684,7 @@ class MyApp(wx.App):
                             curr_selection8_7 = -1
                         if curr_selection8_7 != -1:
                             prev_command8_7 = self.current_command8_7
-                            self.current_command8_7 = graph_commands[curr_selection8_7]
+                            self.current_command8_7 = self.graph_commands[curr_selection8_7]
                         else:
                             self.current_command8_7 = None
 
@@ -1622,7 +1692,7 @@ class MyApp(wx.App):
                             curr_selection8_8 = -1
                         if curr_selection8_8 != -1:
                             prev_command8_8 = self.current_command8_8
-                            self.current_command8_8 = graph_commands[curr_selection8_8]
+                            self.current_command8_8 = self.graph_commands[curr_selection8_8]
                         else:
                             self.current_command8_8 = None
 
@@ -1634,10 +1704,10 @@ class MyApp(wx.App):
                                 # self.graph_y_vals1 = []
                                 self.graph_counter8_1 = 0
                                 wx.PostEvent(self._notify_window,
-                                             Graphs8ValueEvent([0, 0, self.current_command8_1.command]))
+                                             Graphs8ValueEvent([0, 0, self.current_command8_1.command.decode() if isinstance(self.current_command8_1.command, bytes) else self.current_command8_1.command]))
                                 wx.PostEvent(self._notify_window, Graphs8ValueEvent([0, 1, self.current_command8_1.desc]))
                             else:
-                                r = self.connection.connection.query(self.current_command8_1)
+                                r = cached_query(self.current_command8_1)
                                 if r.value == None:
                                     reconnect()
                                     continue
@@ -1683,10 +1753,10 @@ class MyApp(wx.App):
                                 # self.graph_y_vals2 = []
                                 self.graph_counter8_2 = 0
                                 wx.PostEvent(self._notify_window,
-                                             Graphs8ValueEvent([1, 0, self.current_command8_2.command]))
+                                             Graphs8ValueEvent([1, 0, self.current_command8_2.command.decode() if isinstance(self.current_command8_2.command, bytes) else self.current_command8_2.command]))
                                 wx.PostEvent(self._notify_window, Graphs8ValueEvent([1, 1, self.current_command8_2.desc]))
                             else:
-                                r = self.connection.connection.query(self.current_command8_2)
+                                r = cached_query(self.current_command8_2)
                                 if r.value == None:
                                     reconnect()
                                     continue
@@ -1732,10 +1802,10 @@ class MyApp(wx.App):
                                 # self.graph_y_vals3 = []
                                 self.graph_counter8_3 = 0
                                 wx.PostEvent(self._notify_window,
-                                             Graphs8ValueEvent([2, 0, self.current_command8_3.command]))
+                                             Graphs8ValueEvent([2, 0, self.current_command8_3.command.decode() if isinstance(self.current_command8_3.command, bytes) else self.current_command8_3.command]))
                                 wx.PostEvent(self._notify_window, Graphs8ValueEvent([2, 1, self.current_command8_3.desc]))
                             else:
-                                r = self.connection.connection.query(self.current_command8_3)
+                                r = cached_query(self.current_command8_3)
                                 if r.value == None:
                                     reconnect()
                                     continue
@@ -1781,10 +1851,10 @@ class MyApp(wx.App):
                                 # self.graph_y_vals4 = []
                                 self.graph_counter8_4 = 0
                                 wx.PostEvent(self._notify_window,
-                                             Graphs8ValueEvent([3, 0, self.current_command8_4.command]))
+                                             Graphs8ValueEvent([3, 0, self.current_command8_4.command.decode() if isinstance(self.current_command8_4.command, bytes) else self.current_command8_4.command]))
                                 wx.PostEvent(self._notify_window, Graphs8ValueEvent([3, 1, self.current_command8_4.desc]))
                             else:
-                                r = self.connection.connection.query(self.current_command8_4)
+                                r = cached_query(self.current_command8_4)
                                 if r.value == None:
                                     reconnect()
                                     continue
@@ -1837,10 +1907,10 @@ class MyApp(wx.App):
                                 # self.graph_y_vals1 = []
                                 self.graph_counter8_5 = 0
                                 wx.PostEvent(self._notify_window,
-                                             Graphs8ValueEvent([4, 0, self.current_command8_5.command]))
+                                             Graphs8ValueEvent([4, 0, self.current_command8_5.command.decode() if isinstance(self.current_command8_5.command, bytes) else self.current_command8_5.command]))
                                 wx.PostEvent(self._notify_window, Graphs8ValueEvent([4, 1, self.current_command8_5.desc]))
                             else:
-                                r = self.connection.connection.query(self.current_command8_5)
+                                r = cached_query(self.current_command8_5)
                                 if r.value == None:
                                     reconnect()
                                     continue
@@ -1888,10 +1958,10 @@ class MyApp(wx.App):
                                 # self.graph_y_vals2 = []
                                 self.graph_counter8_6 = 0
                                 wx.PostEvent(self._notify_window,
-                                             Graphs8ValueEvent([5, 0, self.current_command8_6.command]))
+                                             Graphs8ValueEvent([5, 0, self.current_command8_6.command.decode() if isinstance(self.current_command8_6.command, bytes) else self.current_command8_6.command]))
                                 wx.PostEvent(self._notify_window, Graphs8ValueEvent([5, 1, self.current_command8_6.desc]))
                             else:
-                                r = self.connection.connection.query(self.current_command8_6)
+                                r = cached_query(self.current_command8_6)
                                 if r.value == None:
                                     reconnect()
                                     continue
@@ -1939,10 +2009,10 @@ class MyApp(wx.App):
                                 # self.graph_y_vals3 = []
                                 self.graph_counter8_7 = 0
                                 wx.PostEvent(self._notify_window,
-                                             Graphs8ValueEvent([6, 0, self.current_command8_7.command]))
+                                             Graphs8ValueEvent([6, 0, self.current_command8_7.command.decode() if isinstance(self.current_command8_7.command, bytes) else self.current_command8_7.command]))
                                 wx.PostEvent(self._notify_window, Graphs8ValueEvent([6, 1, self.current_command8_7.desc]))
                             else:
-                                r = self.connection.connection.query(self.current_command8_7)
+                                r = cached_query(self.current_command8_7)
                                 if r.value == None:
                                     reconnect()
                                     continue
@@ -1988,10 +2058,10 @@ class MyApp(wx.App):
                                 # self.graph_y_vals4 = []
                                 self.graph_counter8_8 = 0
                                 wx.PostEvent(self._notify_window,
-                                             Graphs8ValueEvent([7, 0, self.current_command8_8.command]))
+                                             Graphs8ValueEvent([7, 0, self.current_command8_8.command.decode() if isinstance(self.current_command8_8.command, bytes) else self.current_command8_8.command]))
                                 wx.PostEvent(self._notify_window, Graphs8ValueEvent([7, 1, self.current_command8_8.desc]))
                             else:
-                                r = self.connection.connection.query(self.current_command8_8)
+                                r = cached_query(self.current_command8_8)
                                 if r.value == None:
                                     reconnect()
                                     continue
@@ -2274,9 +2344,14 @@ class MyApp(wx.App):
                                      wx.LC_HRULES |
                                      wx.LC_SINGLE_SEL)
 
-        self.graph_list_ctrl.InsertColumn(0, "PID", width=70)
-        self.graph_list_ctrl.InsertColumn(1, "Sensor", format=wx.LIST_FORMAT_LEFT, width=320)
-        self.graph_list_ctrl.InsertColumn(2, "Value")
+        self.graph_list_ctrl.EnableCheckBoxes(True)
+        self.graph_list_ctrl.InsertColumn(0, "Record", width=60)
+        self.graph_list_ctrl.InsertColumn(1, "PID", width=70)
+        self.graph_list_ctrl.InsertColumn(2, "Sensor", format=wx.LIST_FORMAT_LEFT, width=320)
+        self.graph_list_ctrl.InsertColumn(3, "Value")
+
+        self.graph_list_ctrl.Bind(wx.EVT_LIST_ITEM_CHECKED, self.OnRecordChanged)
+        self.graph_list_ctrl.Bind(wx.EVT_LIST_ITEM_UNCHECKED, self.OnRecordChanged)
 
         self.graph_list_ctrl.InsertItem(0, "")
         self.nb.AddPage(self.graph_panel, "Graph")
@@ -2308,9 +2383,14 @@ class MyApp(wx.App):
                                      wx.LC_HRULES |
                                      wx.LC_SINGLE_SEL)
 
-        self.graphs_list_ctrl.InsertColumn(0, "PID", width=70)
-        self.graphs_list_ctrl.InsertColumn(1, "Sensor", format=wx.LIST_FORMAT_LEFT, width=320)
-        self.graphs_list_ctrl.InsertColumn(2, "Value")
+        self.graphs_list_ctrl.EnableCheckBoxes(True)
+        self.graphs_list_ctrl.InsertColumn(0, "Record", width=60)
+        self.graphs_list_ctrl.InsertColumn(1, "PID", width=70)
+        self.graphs_list_ctrl.InsertColumn(2, "Sensor", format=wx.LIST_FORMAT_LEFT, width=320)
+        self.graphs_list_ctrl.InsertColumn(3, "Value")
+
+        self.graphs_list_ctrl.Bind(wx.EVT_LIST_ITEM_CHECKED, self.OnRecordChanged)
+        self.graphs_list_ctrl.Bind(wx.EVT_LIST_ITEM_UNCHECKED, self.OnRecordChanged)
 
         self.graphs_list_ctrl.InsertItem(0, "")
         self.graphs_list_ctrl.InsertItem(1, "")
@@ -2346,9 +2426,14 @@ class MyApp(wx.App):
                                                 wx.LC_HRULES |
                                                 wx.LC_SINGLE_SEL)
 
-        self.graphs8_list_ctrl.InsertColumn(0, "PID", width=70)
-        self.graphs8_list_ctrl.InsertColumn(1, "Sensor", format=wx.LIST_FORMAT_LEFT, width=320)
-        self.graphs8_list_ctrl.InsertColumn(2, "Value")
+        self.graphs8_list_ctrl.EnableCheckBoxes(True)
+        self.graphs8_list_ctrl.InsertColumn(0, "Record", width=60)
+        self.graphs8_list_ctrl.InsertColumn(1, "PID", width=70)
+        self.graphs8_list_ctrl.InsertColumn(2, "Sensor", format=wx.LIST_FORMAT_LEFT, width=320)
+        self.graphs8_list_ctrl.InsertColumn(3, "Value")
+
+        self.graphs8_list_ctrl.Bind(wx.EVT_LIST_ITEM_CHECKED, self.OnRecordChanged)
+        self.graphs8_list_ctrl.Bind(wx.EVT_LIST_ITEM_UNCHECKED, self.OnRecordChanged)
 
         self.graphs8_list_ctrl.InsertItem(0, "")
         self.graphs8_list_ctrl.InsertItem(1, "")
@@ -2479,6 +2564,7 @@ class MyApp(wx.App):
         self.COMPORT = 0
         self.senprod = None
         self.DEBUGLEVEL = 0  # debug everything
+        obd.logger.setLevel(obd.logging.ERROR)
 
         # tID = wx.NewId()
         tID = wx.NewIdRef(count=1)
@@ -2499,6 +2585,7 @@ class MyApp(wx.App):
             self.SERTIMEOUT = 1
             self.BAUDRATE = "AUTO"
             self.FAST = "NORMAL"
+            self.CSVFILE = "recording.csv"
         else:
             try:
                 self.COMPORT = self.config.get("pyOBD", "COMPORT")
@@ -2506,6 +2593,10 @@ class MyApp(wx.App):
                 self.SERTIMEOUT = self.config.get("pyOBD", "SERTIMEOUT")
                 self.BAUDRATE = self.config.get("pyOBD", "BAUDRATE")
                 self.FAST = self.config.get("pyOBD", "FAST")
+                try:
+                    self.CSVFILE = self.config.get("pyOBD", "CSVFILE")
+                except:
+                    self.CSVFILE = "recording.csv"
             except Exception as e:
                 print(e)
                 self.COMPORT = "AUTO"
@@ -2513,6 +2604,7 @@ class MyApp(wx.App):
                 self.SERTIMEOUT = 5
                 self.BAUDRATE = "AUTO"
                 self.FAST = "FAST"
+                self.CSVFILE = "recording.csv"
 
         self.frame = wx.Frame(None, -1, "pyOBD-II ver. 1.19")
         ico = wx.Icon(resource_path('pyobd.ico'), wx.BITMAP_TYPE_ICO)
@@ -2540,6 +2632,9 @@ class MyApp(wx.App):
         EVT_RESULT(self, self.SetSelectionGraphComboBox, EVT_COMBOBOXGRAPH_SETSELECTION_ID)
         EVT_RESULT(self, self.SetSelectionGraphsComboBox, EVT_COMBOBOXGRAPHS_SETSELECTION_ID)
         EVT_RESULT(self, self.SetSelectionGraphs8ComboBox, EVT_COMBOBOXGRAPHS8_SETSELECTION_ID)
+        EVT_RESULT(self, self.GetRecordSelections, EVT_GET_RECORD_SELECTIONS_ID)
+        self.recorded_pids_shared = []
+        self.is_initializing_gui = False
         EVT_RESULT(self, self.InsertSensorRow, EVT_INSERT_SENSOR_ROW_ID)
         EVT_RESULT(self, self.InsertFreezeframeRow, EVT_INSERT_FREEZEFRAME_ROW_ID)
         EVT_RESULT(self, self.OnFreezeframeResult, EVT_FREEZEFRAME_RESULT_ID)
@@ -2655,6 +2750,11 @@ class MyApp(wx.App):
         self.frame.Bind(wx.EVT_MENU, self.OnHelpAbout, id=ID_HELP_ABOUT)
         self.frame.Bind(wx.EVT_MENU, self.OnHelpVisit, id=ID_HELP_VISIT)
         self.frame.Bind(wx.EVT_MENU, self.OnHelpOrder, id=ID_HELP_ORDER)
+        self.nb.Bind(wx.EVT_NOTEBOOK_PAGE_CHANGED, self.OnPageChanged)
+
+        self.recording_timer = wx.Timer(self)
+        self.Bind(wx.EVT_TIMER, lambda e: self.update_recorded_pids(), self.recording_timer)
+        self.recording_timer.Start(500) # Sync every 500ms
 
         self.SetTopWindow(self.frame)
 
@@ -2740,17 +2840,25 @@ the Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  0211
         self.freezeframe.InsertItem(counter, "")
 
     def BuildComboBoxGraph(self, event):
+        self.is_initializing_gui = True
         self.combobox = wx.ComboBox(self.graph_panel, choices=event.data, pos=(0, 65))
+        self.combobox.Bind(wx.EVT_COMBOBOX, self.OnComboBoxGraph)
         self.build_combobox_graph_event_finished=True
 
     def BuildComboBoxGraphs(self, event):
+        self.is_initializing_gui = True
         self.combobox1 = wx.ComboBox(self.graphs_panel, choices=event.data, pos=(0, 140))
         self.combobox2 = wx.ComboBox(self.graphs_panel, choices=event.data, pos=(0, 190))
         self.combobox3 = wx.ComboBox(self.graphs_panel, choices=event.data, pos=(330, 140))
         self.combobox4 = wx.ComboBox(self.graphs_panel, choices=event.data, pos=(330, 190))
+        self.combobox1.Bind(wx.EVT_COMBOBOX, self.OnComboBoxGraphs1)
+        self.combobox2.Bind(wx.EVT_COMBOBOX, self.OnComboBoxGraphs2)
+        self.combobox3.Bind(wx.EVT_COMBOBOX, self.OnComboBoxGraphs3)
+        self.combobox4.Bind(wx.EVT_COMBOBOX, self.OnComboBoxGraphs4)
         self.build_combobox_graphs_event_finished=True
 
     def BuildComboBoxGraphs8(self, event):
+        self.is_initializing_gui = True
         self.combobox8_1 = wx.ComboBox(self.graphs8_panel, choices=event.data, pos=(0, 240))
         self.combobox8_2 = wx.ComboBox(self.graphs8_panel, choices=event.data, pos=(0, 290))
         self.combobox8_3 = wx.ComboBox(self.graphs8_panel, choices=event.data, pos=(330, 240))
@@ -2759,6 +2867,14 @@ the Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  0211
         self.combobox8_6 = wx.ComboBox(self.graphs8_panel, choices=event.data, pos=(660, 290))
         self.combobox8_7 = wx.ComboBox(self.graphs8_panel, choices=event.data, pos=(990, 240))
         self.combobox8_8 = wx.ComboBox(self.graphs8_panel, choices=event.data, pos=(990, 290))
+        self.combobox8_1.Bind(wx.EVT_COMBOBOX, self.OnComboBoxGraphs8_1)
+        self.combobox8_2.Bind(wx.EVT_COMBOBOX, self.OnComboBoxGraphs8_2)
+        self.combobox8_3.Bind(wx.EVT_COMBOBOX, self.OnComboBoxGraphs8_3)
+        self.combobox8_4.Bind(wx.EVT_COMBOBOX, self.OnComboBoxGraphs8_4)
+        self.combobox8_5.Bind(wx.EVT_COMBOBOX, self.OnComboBoxGraphs8_5)
+        self.combobox8_6.Bind(wx.EVT_COMBOBOX, self.OnComboBoxGraphs8_6)
+        self.combobox8_7.Bind(wx.EVT_COMBOBOX, self.OnComboBoxGraphs8_7)
+        self.combobox8_8.Bind(wx.EVT_COMBOBOX, self.OnComboBoxGraphs8_8)
         self.build_combobox_graphs8_event_finished=True
 
     def DestroyComboBox(self, event):
@@ -2832,6 +2948,7 @@ the Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  0211
 
     def SetSelectionGraphComboBox(self, event):
         self.combobox_selection = self.combobox.SetSelection(0)
+        self.is_initializing_gui = False
         self.combobox_graph_set_sel_finished = True
 
     def SetSelectionGraphsComboBox(self, event):
@@ -2839,6 +2956,7 @@ the Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  0211
         self.combobox2_selection = self.combobox2.SetSelection(1)
         self.combobox3_selection = self.combobox3.SetSelection(2)
         self.combobox4_selection = self.combobox4.SetSelection(3)
+        self.is_initializing_gui = False
         self.combobox_graphs_set_sel_finished = True
 
     def SetSelectionGraphs8ComboBox(self, event):
@@ -2850,7 +2968,158 @@ the Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  0211
         self.combobox8_6_selection = self.combobox8_6.SetSelection(6)
         self.combobox8_7_selection = self.combobox8_7.SetSelection(7)
         self.combobox8_8_selection = self.combobox8_8.SetSelection(8)
+        self.is_initializing_gui = False
         self.combobox_graphs8_set_sel_finished = True
+
+    def GetRecordSelections(self, event):
+        sel = self.nb.GetSelection()
+        res = []
+        try:
+            if sel == 5:
+                res.append(self.graph_list_ctrl.IsItemChecked(0))
+            elif sel == 6:
+                for i in range(4):
+                    res.append(self.graphs_list_ctrl.IsItemChecked(i))
+            elif sel == 7:
+                for i in range(8):
+                    res.append(self.graphs8_list_ctrl.IsItemChecked(i))
+        except:
+            pass
+        self.record_selections = res
+        self.get_record_selections_finished = True
+
+    def OnRecordChanged(self, event):
+        wx.PostEvent(self, DebugEvent([1, "Record checkbox changed"]))
+        self.update_recorded_pids()
+
+    def update_recorded_pids(self):
+        if getattr(self, 'is_initializing_gui', False):
+            return
+        res = []
+
+        if not hasattr(self, 'last_ready_log_time'): self.last_ready_log_time = 0
+
+        # Check senprod readiness
+        if not self.senprod:
+            if time.time() - self.last_ready_log_time > 5:
+                wx.PostEvent(self, DebugEvent([1, "update_recorded_pids: self.senprod is None"]))
+                self.last_ready_log_time = time.time()
+            return
+        if not self.senprod.graph_commands:
+            if time.time() - self.last_ready_log_time > 5:
+                wx.PostEvent(self, DebugEvent([1, "update_recorded_pids: self.senprod.graph_commands empty"]))
+                self.last_ready_log_time = time.time()
+            return
+
+        cmds = self.senprod.graph_commands
+        wx.PostEvent(self, DebugEvent([1, f"update_recorded_pids: discovered cmds count={len(cmds)}"]))
+
+        try:
+            # 1 Graph tab
+            try:
+                item_count = self.graph_list_ctrl.GetItemCount()
+                if item_count > 0:
+                    checked = self.graph_list_ctrl.IsItemChecked(0)
+                    wx.PostEvent(self, DebugEvent([1, f"Tab 5: item_count={item_count}, row 0 checked={checked}"]))
+                    if checked:
+                        sel = self.combobox.GetSelection()
+                        if sel != -1:
+                            res.append(cmds[sel])
+                        else:
+                            wx.PostEvent(self, DebugEvent([1, "Tab 5: Row 0 checked but ComboBox has no selection"]))
+            except Exception as e:
+                wx.PostEvent(self, DebugEvent([1, f"Tab 5 error: {e}"]))
+
+            # 4 Graphs tab
+            try:
+                item_count = self.graphs_list_ctrl.GetItemCount()
+                if item_count > 0:
+                    for i in range(min(item_count, 4)):
+                        checked = self.graphs_list_ctrl.IsItemChecked(i)
+                        wx.PostEvent(self, DebugEvent([1, f"Tab 6: row {i} checked={checked}"]))
+                        if checked:
+                            cb = getattr(self, f'combobox{i+1}', None)
+                            if cb:
+                                sel = cb.GetSelection()
+                                if sel != -1:
+                                    res.append(cmds[sel])
+                                else:
+                                    wx.PostEvent(self, DebugEvent([1, f"Tab 6: Row {i} checked but ComboBox {i+1} has no selection"]))
+            except Exception as e:
+                wx.PostEvent(self, DebugEvent([1, f"Tab 6 error: {e}"]))
+
+            # 8 Graphs tab
+            try:
+                item_count = self.graphs8_list_ctrl.GetItemCount()
+                if item_count > 0:
+                    for i in range(min(item_count, 8)):
+                        checked = self.graphs8_list_ctrl.IsItemChecked(i)
+                        wx.PostEvent(self, DebugEvent([1, f"Tab 7: row {i} checked={checked}"]))
+                        if checked:
+                            cb = getattr(self, f'combobox8_{i+1}', None)
+                            if cb:
+                                sel = cb.GetSelection()
+                                if sel != -1:
+                                    res.append(cmds[sel])
+                                else:
+                                    wx.PostEvent(self, DebugEvent([1, f"Tab 7: Row {i} checked but ComboBox 8_{i+1} has no selection"]))
+            except Exception as e:
+                wx.PostEvent(self, DebugEvent([1, f"Tab 7 error: {e}"]))
+
+        except Exception as e:
+            wx.PostEvent(self, DebugEvent([1, f"Major error in update_recorded_pids: {e}"]))
+            print(f"Error updating recorded PIDs: {e}")
+
+        # Unique PIDs, sorted to maintain stable order for comparison
+        self.recorded_pids_shared = sorted(list(set(res)), key=lambda x: str(x.command))
+        wx.PostEvent(self, DebugEvent([1, f"FINAL Active recording PIDs count: {len(self.recorded_pids_shared)}"]))
+
+    def OnComboBoxGraph(self, event):
+        self.graph_list_ctrl.CheckItem(0, False)
+        self.update_recorded_pids()
+
+    def OnComboBoxGraphs1(self, event):
+        self.graphs_list_ctrl.CheckItem(0, False)
+        self.update_recorded_pids()
+    def OnComboBoxGraphs2(self, event):
+        self.graphs_list_ctrl.CheckItem(1, False)
+        self.update_recorded_pids()
+    def OnComboBoxGraphs3(self, event):
+        self.graphs_list_ctrl.CheckItem(2, False)
+        self.update_recorded_pids()
+    def OnComboBoxGraphs4(self, event):
+        self.graphs_list_ctrl.CheckItem(3, False)
+        self.update_recorded_pids()
+
+    def OnComboBoxGraphs8_1(self, event):
+        self.graphs8_list_ctrl.CheckItem(0, False)
+        self.update_recorded_pids()
+    def OnComboBoxGraphs8_2(self, event):
+        self.graphs8_list_ctrl.CheckItem(1, False)
+        self.update_recorded_pids()
+    def OnComboBoxGraphs8_3(self, event):
+        self.graphs8_list_ctrl.CheckItem(2, False)
+        self.update_recorded_pids()
+    def OnComboBoxGraphs8_4(self, event):
+        self.graphs8_list_ctrl.CheckItem(3, False)
+        self.update_recorded_pids()
+    def OnComboBoxGraphs8_5(self, event):
+        self.graphs8_list_ctrl.CheckItem(4, False)
+        self.update_recorded_pids()
+    def OnComboBoxGraphs8_6(self, event):
+        self.graphs8_list_ctrl.CheckItem(5, False)
+        self.update_recorded_pids()
+    def OnComboBoxGraphs8_7(self, event):
+        self.graphs8_list_ctrl.CheckItem(6, False)
+        self.update_recorded_pids()
+    def OnComboBoxGraphs8_8(self, event):
+        self.graphs8_list_ctrl.CheckItem(7, False)
+        self.update_recorded_pids()
+
+    def OnPageChanged(self, event):
+        wx.PostEvent(self, DebugEvent([1, f"Tab changed to: {self.nb.GetSelection()}"]))
+        self.update_recorded_pids()
+
     def OnClose(self, event):
 
         #while self.senprod.state != "finished":
@@ -3257,13 +3526,13 @@ the Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  0211
             animate()
 
     def OnGraphValue(self, event):
-        self.graph_list_ctrl.SetItem(event.data[0], event.data[1], event.data[2])
+        self.graph_list_ctrl.SetItem(event.data[0], event.data[1] + 1, str(event.data[2]))
 
     def OnGraphsValue(self, event):
-        self.graphs_list_ctrl.SetItem(event.data[0], event.data[1], event.data[2])
+        self.graphs_list_ctrl.SetItem(event.data[0], event.data[1] + 1, str(event.data[2]))
 
     def OnGraphs8Value(self, event):
-        self.graphs8_list_ctrl.SetItem(event.data[0], event.data[1], event.data[2])
+        self.graphs8_list_ctrl.SetItem(event.data[0], event.data[1] + 1, str(event.data[2]))
 
     def OnDebug(self, event):
         self.TraceDebug(event.data[0], event.data[1])
@@ -3287,6 +3556,7 @@ the Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  0211
 
     def OpenPort(self, e):
         print("Open port event.")
+        self.is_initializing_gui = False
         if self.senprod:
             if self.senprod.is_alive():  # signal current producers to finish
                 self.senprod.stop()
@@ -3296,6 +3566,7 @@ the Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  0211
         self.senprod.start()
 
         self.sensor_control_on()
+        self.update_recorded_pids()
 
     def GetDTC(self, e):
         self.nb.SetSelection(3)
@@ -3417,6 +3688,22 @@ the Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  0211
         reconnectStatic = wx.StaticText(reconnectPanel, -1, 'Reconnect attempts:', pos=(3, 5), size=(140, 20))
         reconnectCtrl.SetValue(str(self.RECONNATTEMPTS))
 
+        # csv file input control
+        csvPanel = wx.Panel(diag, -1)
+        csvCtrl = wx.TextCtrl(csvPanel, -1, '', pos=(140, 0), size=(200, 25))
+        csvStatic = wx.StaticText(csvPanel, -1, 'CSV recording file:', pos=(3, 5), size=(140, 20))
+        csvCtrl.SetValue(str(self.CSVFILE))
+
+        def on_browse_csv(e):
+            with wx.FileDialog(diag, "Choose CSV file", wildcard="CSV files (*.csv)|*.csv",
+                               style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT) as fileDialog:
+                if fileDialog.ShowModal() == wx.ID_CANCEL:
+                    return
+                csvCtrl.SetValue(fileDialog.GetPath())
+
+        csvBrowseBtn = wx.Button(csvPanel, -1, 'Browse...', pos=(345, 0), size=(80, 25))
+        csvPanel.Bind(wx.EVT_BUTTON, on_browse_csv, csvBrowseBtn)
+
 
 
         # set actual serial port choice
@@ -3431,6 +3718,7 @@ the Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  0211
 
         sizer.Add(timeoutPanel, 0)
         sizer.Add(reconnectPanel, 0)
+        sizer.Add(csvPanel, 0)
 
         box = wx.BoxSizer(wx.HORIZONTAL)
         box.Add(wx.Button(diag, wx.ID_OK), 0)
@@ -3467,6 +3755,10 @@ the Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  0211
             # set and save RECONNATTEMPTS
             self.RECONNATTEMPTS = int(reconnectCtrl.GetValue())
             self.config.set("pyOBD", "RECONNATTEMPTS", self.RECONNATTEMPTS)
+
+            # set and save CSVFILE
+            self.CSVFILE = csvCtrl.GetValue()
+            self.config.set("pyOBD", "CSVFILE", self.CSVFILE)
 
             # write configuration to cfg file
             self.config.write(open(self.configfilepath, 'w'))
